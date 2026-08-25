@@ -1,0 +1,8 @@
+# Go build output
+bin/
+coverage.out
+data/
+
+# Local development files
+.env
+.DS_Store
