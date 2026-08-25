@@ -28,8 +28,8 @@ The container package uses a multi-stage Go build and a minimal runtime image. I
 
 The first dashboard HTTP test exposed that the static UI expects the repository-root working directory; the test now starts from that intended runtime location. The desktop execution runner also ended a short-lived manual server process before an interactive UI fetch could complete, so no visual-browser claim is made.
 
-Most importantly, no live PipeOps deployment has run from this controller. The connected Codex PipeOps session is not available as a bearer token to the Go process. The project also has no GitHub repository or published container image yet, so PipeOps has no source artifact to build.
+Most importantly, no live PipeOps deployment has run from this controller. The connected Codex PipeOps session is not available as a bearer token to the Go process. The project source is now published at `prewsh/MCP-Deployment-Lab` and its Dockerfile was independently verified on GitHub, but PipeOps project creation has not been issued from this session.
 
 ## Next live experiment
 
-Create or connect a GitHub repository, ensure PipeOps can read it, provide a controller-specific short-lived PipeOps write token through deployment secrets, and configure only the approved beta workspace/environment/server IDs. The first live test should use the normal path. The lost-response experiment should follow only after `ENABLE_FAULT_INJECTION=true` is deliberately enabled for that same sandbox.
+Ensure PipeOps can read `prewsh/MCP-Deployment-Lab`, provide a controller-specific short-lived PipeOps write token through deployment secrets, and configure only the approved beta workspace/environment/server IDs. The first live test should use the normal path. The lost-response experiment should follow only after `ENABLE_FAULT_INJECTION=true` is deliberately enabled for that same sandbox.
