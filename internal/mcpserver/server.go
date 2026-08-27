@@ -132,7 +132,7 @@ func NewServer(logger *slog.Logger, workflows *deployment.Service, planner *plan
 		Name:    "mcp-deployment-controller",
 		Version: "0.1.0",
 	}, &mcp.ServerOptions{
-		Instructions: "The controller stores and simulates fake workflows locally. Its PipeOps planning tools are read-only: they discover capabilities and validate targets, but never create or deploy projects.",
+		Instructions: "The controller stores and simulates fake workflows locally. PipeOps discovery and planning are read-only. After an exact plan hash is explicitly approved and the local sandbox policy permits it, the controller can invoke only PipeOps create_project and deploy_project, then observes the resulting deployment.",
 		Logger:       logger,
 	})
 

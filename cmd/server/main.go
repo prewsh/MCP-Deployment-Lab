@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -23,8 +24,31 @@ import (
 	"github.com/mrprewsh/mcp-deployment-controller/internal/store"
 )
 
+type accessMode string
+
+const (
+	accessModeLoopback       accessMode = "loopback"
+	accessModePublicReadonly accessMode = "public-readonly"
+	accessModeAuthenticated  accessMode = "authenticated"
+)
+
+type accessConfig struct {
+	mode        accessMode
+	bearerToken string
+}
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	listenAddress := os.Getenv("MCP_DEPLOYMENT_CONTROLLER_LISTEN_ADDR")
+	if listenAddress == "" {
+		listenAddress = "127.0.0.1:8080"
+	}
+	access, err := accessConfigFromEnv(listenAddress)
+	if err != nil {
+		logger.Error("invalid HTTP access configuration", "error", err)
+		os.Exit(1)
+	}
+
 	databasePath := os.Getenv("MCP_DEPLOYMENT_CONTROLLER_DB_PATH")
 	if databasePath == "" {
 		databasePath = "data/mcp-deployment-controller.db"
@@ -49,16 +73,7 @@ func main() {
 		executor = execution.NewService(workflowStore, pipeOpsClient, writePolicy)
 	}
 	mcpHandler := mcpserver.NewHTTPHandler(logger, workflows, planner, approvals, executor)
-	handler := newRootHandler(mcpHandler, workflowStore)
-
-	listenAddress := os.Getenv("MCP_DEPLOYMENT_CONTROLLER_LISTEN_ADDR")
-	if listenAddress == "" {
-		listenAddress = "127.0.0.1:8080"
-	}
-	if !strings.HasPrefix(listenAddress, "127.0.0.1:") && os.Getenv("MCP_DEPLOYMENT_CONTROLLER_ALLOW_NETWORK_BIND") != "true" {
-		logger.Error("network bind is disabled; set MCP_DEPLOYMENT_CONTROLLER_ALLOW_NETWORK_BIND=true only behind authenticated private ingress", "address", listenAddress)
-		os.Exit(1)
-	}
+	handler := newRootHandler(mcpHandler, workflowStore, access)
 	listener, err := net.Listen("tcp", listenAddress)
 	if err != nil {
 		logger.Error("listen failed", "address", listenAddress, "error", err)
@@ -70,7 +85,7 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	logger.Info("MCP Deployment Controller started", "address", listener.Addr().String(), "protocol", mcpserver.ProtocolVersion, "database", databasePath, "pipeops_planning_configured", planner != nil)
+	logger.Info("MCP Deployment Controller started", "access_mode", access.mode)
 
 	shutdownSignal := make(chan os.Signal, 1)
 	signal.Notify(shutdownSignal, os.Interrupt, syscall.SIGTERM)
@@ -97,13 +112,95 @@ func main() {
 	}
 }
 
-func newRootHandler(mcpHandler http.Handler, workflowStore *store.SQLite) http.Handler {
+func accessConfigFromEnv(listenAddress string) (accessConfig, error) {
+	return newAccessConfig(
+		listenAddress,
+		os.Getenv("MCP_DEPLOYMENT_CONTROLLER_ALLOW_NETWORK_BIND") == "true",
+		os.Getenv("MCP_DEPLOYMENT_CONTROLLER_PUBLIC_MODE"),
+		os.Getenv("MCP_DEPLOYMENT_CONTROLLER_MCP_BEARER_TOKEN"),
+	)
+}
+
+func newAccessConfig(listenAddress string, allowNetworkBind bool, publicModeValue, bearerToken string) (accessConfig, error) {
+	publicMode, err := parsePublicMode(publicModeValue)
+	if err != nil {
+		return accessConfig{}, err
+	}
+	bearerToken = strings.TrimSpace(bearerToken)
+	if publicMode && bearerToken != "" {
+		return accessConfig{}, errors.New("public-readonly mode and MCP bearer authentication cannot both be configured")
+	}
+
+	loopback, err := isLoopbackAddress(listenAddress)
+	if err != nil {
+		return accessConfig{}, err
+	}
+	if !loopback && !allowNetworkBind {
+		return accessConfig{}, errors.New("network bind is disabled; set MCP_DEPLOYMENT_CONTROLLER_ALLOW_NETWORK_BIND=true")
+	}
+	if !loopback && !publicMode && bearerToken == "" {
+		return accessConfig{}, errors.New("non-loopback binding requires public-readonly mode or MCP bearer authentication")
+	}
+	if publicMode {
+		return accessConfig{mode: accessModePublicReadonly}, nil
+	}
+	if bearerToken != "" {
+		return accessConfig{mode: accessModeAuthenticated, bearerToken: bearerToken}, nil
+	}
+	return accessConfig{mode: accessModeLoopback}, nil
+}
+
+func parsePublicMode(value string) (bool, error) {
+	switch value {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	default:
+		return false, errors.New("MCP_DEPLOYMENT_CONTROLLER_PUBLIC_MODE must be true or false")
+	}
+}
+
+func isLoopbackAddress(listenAddress string) (bool, error) {
+	host, _, err := net.SplitHostPort(listenAddress)
+	if err != nil {
+		return false, errors.New("MCP_DEPLOYMENT_CONTROLLER_LISTEN_ADDR must include a host and port")
+	}
+	if host == "localhost" {
+		return true, nil
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback(), nil
+}
+
+func newRootHandler(mcpHandler http.Handler, workflowStore *store.SQLite, access accessConfig) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/api/executions/") {
+		if request.Method == http.MethodGet && request.URL.Path == "/healthz" {
+			response.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = response.Write([]byte("ok\n"))
+			return
+		}
+		if request.Method == http.MethodGet && request.URL.Path == "/" {
+			if access.mode == accessModePublicReadonly {
+				http.ServeFile(response, request, "web/public.html")
+				return
+			}
+			http.ServeFile(response, request, "web/index.html")
+			return
+		}
+		if request.URL.Path == "/api/executions" || strings.HasPrefix(request.URL.Path, "/api/executions/") {
+			if access.mode == accessModePublicReadonly || request.Method != http.MethodGet {
+				notFoundEmpty(response)
+				return
+			}
+			if access.mode == accessModeAuthenticated && !hasValidBearer(request, access.bearerToken) {
+				unauthorized(response)
+				return
+			}
 			id := strings.TrimPrefix(request.URL.Path, "/api/executions/")
 			value, err := workflowStore.GetExecution(request.Context(), id)
 			if err != nil {
-				http.NotFound(response, request)
+				notFoundEmpty(response)
 				return
 			}
 			events, err := workflowStore.ListExecutionEvents(request.Context(), id)
@@ -115,10 +212,28 @@ func newRootHandler(mcpHandler http.Handler, workflowStore *store.SQLite) http.H
 			_ = json.NewEncoder(response).Encode(map[string]any{"execution": value, "events": events})
 			return
 		}
-		if request.Method == http.MethodGet {
-			http.ServeFile(response, request, "web/index.html")
+		if access.mode == accessModePublicReadonly {
+			notFoundEmpty(response)
+			return
+		}
+		if access.mode == accessModeAuthenticated && !hasValidBearer(request, access.bearerToken) {
+			unauthorized(response)
 			return
 		}
 		mcpHandler.ServeHTTP(response, request)
 	})
+}
+
+func hasValidBearer(request *http.Request, token string) bool {
+	provided := request.Header.Get("Authorization")
+	expected := "Bearer " + token
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
+}
+
+func unauthorized(response http.ResponseWriter) {
+	response.WriteHeader(http.StatusUnauthorized)
+}
+
+func notFoundEmpty(response http.ResponseWriter) {
+	response.WriteHeader(http.StatusNotFound)
 }

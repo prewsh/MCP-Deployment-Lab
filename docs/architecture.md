@@ -1,100 +1,77 @@
-# Milestone 4 architecture
+# Architecture
 
 ## Purpose
 
-Milestone 4 turns a PipeOps plan into a controlled authority boundary. A plan carries an immutable hash; a decision binds that hash to an approver; a local policy admits only the configured sandbox; execution rechecks all three before any downstream write.
+MCP Deployment Lab separates an agent's request to deploy from the authority to make an infrastructure change. It is an upstream MCP server for clients and a downstream MCP client for PipeOps. Its HTTP MCP transport is stateless; plans, approvals, executions, and audit events are application state stored in SQLite.
 
 ```text
-MCP client
+AI / MCP client
     │
-    │ server/discover, tools/list, tools/call
+    │ Streamable HTTP
     ▼
-Streamable HTTP handler (Stateless: true)
-    ▼
-MCP server
-    ├─ echo
-    ├─ inspect_request
-    ├─ start_fake_deployment
-    └─ get_deployment
-            │
-            ▼
-   deployment.Service (background simulation)
-            │
-            ▼
- SQLite: deployments + append-only deployment_events
-            │
-            ├─ pipeops_discoveries (protocol + tool catalog)
-            └─ deployment_plans (immutable proposal JSON)
-
-MCP server tools
+HTTP access boundary
+    ├─ loopback
+    ├─ public-readonly
+    └─ authenticated bearer
     │
-    │ outbound MCP with short-lived bearer token
     ▼
-PipeOps remote MCP endpoint
-    ├─ tools/list
-    ├─ list_servers             (read)
-    └─ list_environments        (read)
-
-Future, not called in this milestone:
-    ├─ delete / stop / recovery writes
-    └─ arbitrary provider tools
+MCP Deployment Lab
+    ├─ echo / inspect_request
+    ├─ fake workflow simulation
+    ├─ PipeOps discovery and planning
+    ├─ plan-bound approval and policy validation
+    ├─ approved execution and observation
+    ├─ proposal-only recovery helper
+    └─ SQLite audit trail
+    │
+    ▼
+PipeOps MCP
+    ├─ list_servers / list_environments
+    ├─ create_project
+    ├─ deploy_project
+    └─ observation tools
 ```
 
-## Protocol lifecycle
+## HTTP access boundary
 
-MCP versions through `2025-11-25` use `initialize` followed by `notifications/initialized`. MCP `2026-07-28` removes that handshake: requests carry protocol version and client capabilities in `_meta`, and servers implement `server/discover` so clients can learn capabilities and choose a compatible version.
+The access boundary is evaluated before the SQLite store and MCP handler are started.
 
-`Stateless: true` means this HTTP handler does not maintain MCP HTTP sessions or process server-to-client requests. It does **not** prevent a future application from storing deployment records, approvals, or audit events in its own database.
+- **Loopback:** the default `127.0.0.1:8080` configuration has no inbound authentication and is intended for local development.
+- **Public-readonly:** `MCP_DEPLOYMENT_CONTROLLER_PUBLIC_MODE=true` exposes only a static `GET /` page and `GET /healthz`. MCP and `/api/executions/*` return empty `404` responses.
+- **Authenticated:** `MCP_DEPLOYMENT_CONTROLLER_MCP_BEARER_TOKEN` protects MCP requests and execution timelines with an exact `Authorization: Bearer <token>` value checked using `crypto/subtle.ConstantTimeCompare`.
 
-## Downstream protocol and credentials
+A non-loopback listener needs `MCP_DEPLOYMENT_CONTROLLER_ALLOW_NETWORK_BIND=true` and must choose either public-readonly or authenticated mode. Public-readonly and bearer authentication are mutually exclusive.
 
-The controller uses the official Go MCP SDK's Streamable HTTP client. The client records the actual `Mcp-Protocol-Version` header used after negotiation, along with the downstream tool catalog. It supports a remote service that negotiates an older compatible version, as verified by the automated test.
+The static public page never reads execution data. The local timeline page renders execution fields with DOM text nodes rather than HTML interpolation.
 
-`PIPEOPS_MCP_ACCESS_TOKEN` is supplied only to the controller process. The HTTP transport injects it into the `Authorization` header for outbound requests, but no token value is included in structured logs, tool responses, SQLite, or plan evidence. The desktop application's PipeOps connector session deliberately is not assumed to be available to the local process.
+## Planning, approval, and policy
 
-## Authority boundary
+`plan_pipeops_deployment` uses PipeOps discovery plus `list_servers` and `list_environments` to create a durable proposal. It does not perform a write.
 
-`plan_pipeops_deployment` validates a supplied workspace/environment pair through `list_servers` and `list_environments`. It confirms the linked server exists and is `available`, then writes a local `PROPOSED` plan. The plan enumerates anticipated write operations but does not call them. There is no provider abstraction in this milestone: the contract and validation are deliberately PipeOps-specific.
+The proposal contains a SHA-256 hash over its serialized execution intent. `decide_pipeops_plan` records one immutable approval or denial that names the exact hash. Before writing, `execute_pipeops_plan` rechecks:
 
-The initial approved sandbox target is `dark-prometheus-beta` on `dark-prometheus` in `eu-west-2`. Its IDs are intentionally runtime configuration, not hard-coded application configuration. Production is never an M4 target.
+1. the stored plan hash;
+2. the matching approved decision;
+3. `PIPEOPS_WRITE_ENABLED=true`;
+4. the configured workspace, environment, and server allowlist; and
+5. the constrained GitHub/Dockerfile execution contract.
 
-```text
-PROPOSED plan + SHA-256 hash
-          │
-          ▼
-immutable APPROVED / DENIED decision
-          │
-          ▼
-recheck hash + approval + write switch + three-ID allowlist
-          │
-          ▼
-create_project → deploy_project → observe
-```
-
-The policy requires `PIPEOPS_WRITE_ENABLED=true` and matching `PIPEOPS_ALLOWED_WORKSPACE_ID`, `PIPEOPS_ALLOWED_ENVIRONMENT_ID`, and `PIPEOPS_ALLOWED_SERVER_ID`. It admits only the constrained GitHub/Dockerfile project contract. Downstream MCP annotations are retained in the discovered catalog as safety evidence, but the controller's explicit local policy makes the authorization decision.
+Only then can the controller invoke `create_project` followed by `deploy_project`. Delete, stop, arbitrary tool, and recovery writes are not implemented.
 
 ## Execution and observation
 
-The execution record is unique per plan, preventing the controller from issuing duplicate writes for a repeated execution request. It records `EXECUTING`, `OBSERVING`, `HEALTHY`, `FAILED`, or `UNKNOWN`, plus an append-only timeline. The controller calls `get_project_build_logs`, `get_project`, and `get_project_logs` until it observes terminal evidence. A timeout, cancellation, or failed observation call becomes `UNKNOWN`; it does not justify a blind retry.
+An execution record is unique per plan, preventing repeat execution requests from issuing another controller-managed write. The execution timeline records `EXECUTING`, `OBSERVING`, `HEALTHY`, `FAILED`, or `UNKNOWN`.
 
-## Milestone 5 failure boundary
+After PipeOps accepts a deployment, the controller observes build logs, project state, and runtime logs. A missing response in the intentional lost-response experiment, an observation error, cancellation, or timeout becomes `UNKNOWN`; the controller does not blindly retry.
 
-The only injected fault is `LOST_RESPONSE_AFTER_DEPLOY`. It is guarded by `ENABLE_FAULT_INJECTION=true` as well as the exact M4 sandbox policy. It occurs only after `deploy_project` has been called successfully and forces `UNKNOWN`; observation and automatic retry are intentionally skipped.
+The recovery helper is proposal-only. It can formulate a port-change proposal only when a failed observation provides a different detected port. The current PipeOps adapter reduces failed provider evidence to a generic summary, so a live wrong-port payload is required before this path can be wired to provider evidence safely.
 
-For a failed observation that identifies a port mismatch, the controller appends a `RECOVERY_PROPOSED` event. It is explanatory evidence, not an authorization or write path. The local `GET /` view accepts `?execution_id=...` and reads that execution's append-only events from `GET /api/executions/{id}`; it includes accessible status color, a skip link, responsive layout, and reduced-motion support.
+## Persistence and audit
 
-## Boundaries
+SQLite stores fake deployments, their append-only events, PipeOps discovery records, immutable plan JSON, immutable approvals, executions, and append-only execution events. SQLite triggers reject updates and deletes to the audit tables.
 
-This milestone deliberately contains no delete/stop/recovery write path, fault injection, MCP Tasks implementation, provider abstraction, or frontend. `start_fake_deployment` still has only a local side effect: it writes a SQLite workflow record and simulates states in a background goroutine.
+The local `GET /` timeline page can load an execution through `GET /api/executions/{id}` in loopback or authenticated mode. The API is intentionally unavailable in public-readonly mode.
 
-## Workflow state and audit events
+## Current limits
 
-The healthy fake lifecycle is `QUEUED → DEPLOYING → BUILDING → VERIFYING → HEALTHY`. Passing `fail_at: "BUILDING"` takes the controlled failure path `QUEUED → DEPLOYING → BUILDING → FAILED`.
-
-Each transition is written in the same SQLite transaction as the updated deployment status. `deployment_events` contains identifiers, timestamp, event source/type, status before/after, result summary, protocol version where known, and a hash rather than raw tool arguments. SQLite triggers reject updates and deletes against this table.
-
-MCP server/session state remains stateless. The SQLite records are application workflow state and will later be the controller's durable timeline; they are not MCP Tasks. PipeOps discoveries and plans are also durable evidence, but not permission to execute the proposed write operations.
-
-## Safe request inspection
-
-`inspect_request` returns only the SDK-exposed protocol version, client identity, and client capabilities. HTTP headers, authentication data, cookies, request bodies, and tool arguments are excluded from both tool output and request logs.
+The project currently supports PipeOps only, has no MCP Tasks integration or automated `UNKNOWN` reconciliation, and uses a shared inbound bearer token rather than OAuth for authenticated remote access. It is intended for sandbox infrastructure while these controls and provider evidence contracts mature.
