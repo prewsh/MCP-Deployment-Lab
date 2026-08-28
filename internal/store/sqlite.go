@@ -222,6 +222,31 @@ func (store *SQLite) GetExecutionByPlan(ctx context.Context, planID string) (exe
 func (store *SQLite) GetExecution(ctx context.Context, id string) (execution.Execution, error) {
 	return store.getExecution(ctx, `SELECT id, plan_id, plan_hash, project_id, status, error, created_at, completed_at FROM deployment_executions WHERE id = ?`, id)
 }
+
+// ListExecutions returns durable execution summaries in creation order. It is
+// used by the local evidence CLI; no HTTP endpoint exposes this collection.
+func (store *SQLite) ListExecutions(ctx context.Context) ([]execution.Execution, error) {
+	rows, err := store.db.QueryContext(ctx, `SELECT id, plan_id, plan_hash, project_id, status, error, created_at, completed_at FROM deployment_executions ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var executions []execution.Execution
+	for rows.Next() {
+		var value execution.Execution
+		var created int64
+		var completed sql.NullInt64
+		if err := rows.Scan(&value.ID, &value.PlanID, &value.PlanHash, &value.ProjectID, &value.Status, &value.Error, &created, &completed); err != nil {
+			return nil, err
+		}
+		value.CreatedAt = time.Unix(0, created).UTC()
+		if completed.Valid {
+			value.CompletedAt = time.Unix(0, completed.Int64).UTC()
+		}
+		executions = append(executions, value)
+	}
+	return executions, rows.Err()
+}
 func (store *SQLite) ListExecutionEvents(ctx context.Context, executionID string) ([]execution.Event, error) {
 	rows, err := store.db.QueryContext(ctx, `SELECT event_id,execution_id,event_type,tool_name,summary,occurred_at,status_before,status_after FROM deployment_execution_events WHERE execution_id=? ORDER BY sequence`, executionID)
 	if err != nil {

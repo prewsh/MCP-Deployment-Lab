@@ -47,8 +47,8 @@ The controller is an MCP server upstream and an MCP client downstream. It stores
 - Downstream PipeOps capability discovery and read-only target validation.
 - SHA-256 plan hashes, one immutable approval decision per plan, and a fail-closed sandbox allowlist.
 - Approved PipeOps execution through only `create_project` and `deploy_project`.
-- Build, project, and runtime-log observation that classifies a deployment as `HEALTHY`, `FAILED`, or `UNKNOWN`.
-- A proposal-only recovery helper for failed observations that contain a detected port.
+- Build, project, and runtime-log observation that classifies a deployment as `HEALTHY`, `FAILED`, or `UNKNOWN` with sanitized readiness-probe evidence where available.
+- A proposal-only recovery helper for structured readiness-probe failures with a detected port.
 - Loopback, public-readonly, and authenticated HTTP access modes.
 
 ## MCP tools
@@ -76,6 +76,15 @@ go run ./cmd/server
 The default loopback server listens on `http://127.0.0.1:8080`. No inbound authentication is required in this local-only mode. The default database is `data/mcp-deployment-controller.db`; set `MCP_DEPLOYMENT_CONTROLLER_DB_PATH` to use another SQLite file.
 
 Connect an MCP-capable client to that URL, call `start_fake_deployment`, then call `get_deployment` with its returned `deployment_id`. The local timeline view is available at `/?execution_id=<execution-id>`.
+
+To export a durable PipeOps execution timeline from the local SQLite database:
+
+```bash
+go run ./cmd/evidence -list
+go run ./cmd/evidence -execution exec_abc123
+```
+
+The CLI must run where `MCP_DEPLOYMENT_CONTROLLER_DB_PATH` is accessible; it does not expose remote evidence over HTTP. See [evidence documentation](docs/evidence/README.md) and [live findings](docs/findings.md).
 
 ## Access modes
 
@@ -123,9 +132,9 @@ The allowlist is checked both when a plan is approved and immediately before exe
 - `UNKNOWN` has no automated reconciliation workflow.
 - Remote authentication is shared bearer authentication, not OAuth.
 - Infrastructure sizing and recommendations are not implemented.
-- The current PipeOps observation adapter emits a generic failed summary, so live wrong-port evidence is not yet available to the recovery helper. That evidence path will be updated after a real provider payload is captured.
+- If PipeOps accepts project creation but omits a durable project ID in a supported response location, the controller records `UNKNOWN` and does not retry the write. The provider response contract must be captured before the controller can continue that execution safely.
 
-See [the architecture document](docs/architecture.md) for the current design and [the build story](docs/build-story.md) and [learning log](docs/learning-log.md) for project history.
+See [the architecture document](docs/architecture.md) for the current design, [live findings](docs/findings.md), [roadmap](ROADMAP.md), [the build story](docs/build-story.md), and [learning log](docs/learning-log.md).
 
 ## License
 
