@@ -2,6 +2,7 @@ package pipeops
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -79,6 +80,40 @@ func TestCreateDeployAndObserveProject(t *testing.T) {
 	}
 	if projectID != "project-1" || observation.State != "HEALTHY" || createCalls.Load() != 1 || deployCalls.Load() != 1 {
 		t.Errorf("project=%q observation=%#v create=%d deploy=%d", projectID, observation, createCalls.Load(), deployCalls.Load())
+	}
+}
+
+func TestClassifyObservationPreservesSanitizedWrongPortEvidence(t *testing.T) {
+	observation := classifyObservation(`Readiness probe failed: dial tcp 203.0.113.10:3000: connect: connection refused`)
+	if observation.State != "FAILED" || observation.FailureKind != "READINESS_PROBE_CONNECTION_REFUSED" || observation.DetectedPort != 3000 {
+		t.Fatalf("observation = %#v", observation)
+	}
+	if observation.Summary != "PipeOps readiness probe could not connect to port 3000." {
+		t.Errorf("summary = %q", observation.Summary)
+	}
+}
+
+func TestCreateProjectMarksMissingIDAsUncertainWrite(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "fake-pipeops", Version: "v0"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "create_project"}, func(context.Context, *mcp.CallToolRequest, map[string]any) (*mcp.CallToolResult, any, error) {
+		return nil, map[string]any{"accepted": true}, nil
+	})
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	httpServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer read-only-test-token" {
+			response.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		handler.ServeHTTP(response, request)
+	}))
+	defer httpServer.Close()
+	client, err := NewClient(Config{Endpoint: httpServer.URL, AccessToken: "read-only-test-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.CreateProject(context.Background(), CreateProjectInput{Name: "fixture"})
+	if !errors.Is(err, ErrProjectIDMissing) {
+		t.Fatalf("CreateProject() error = %v, want ErrProjectIDMissing", err)
 	}
 }
 

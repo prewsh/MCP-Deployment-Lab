@@ -3,9 +3,9 @@ package recovery
 
 import (
 	"fmt"
+
+	"github.com/mrprewsh/mcp-deployment-controller/internal/pipeops"
 	"github.com/mrprewsh/mcp-deployment-controller/internal/planning"
-	"regexp"
-	"strconv"
 )
 
 type Proposal struct {
@@ -14,16 +14,12 @@ type Proposal struct {
 	Risk                        string
 }
 
-var portPattern = regexp.MustCompile(`(?i)port[^0-9]{0,12}([0-9]{2,5})`)
-
-func FromFailure(plan planning.Plan, observation string) (Proposal, bool) {
-	match := portPattern.FindStringSubmatch(observation)
-	if len(match) != 2 {
+// FromFailure creates a new proposal only when the observation adapter has
+// classified a concrete, sanitized failure. It never parses generic prose or
+// performs a change itself.
+func FromFailure(plan planning.Plan, observation pipeops.Observation) (Proposal, bool) {
+	if observation.FailureKind != "READINESS_PROBE_CONNECTION_REFUSED" || observation.DetectedPort < 1 || observation.DetectedPort > 65535 || observation.DetectedPort == plan.Port {
 		return Proposal{}, false
 	}
-	port, err := strconv.Atoi(match[1])
-	if err != nil || port < 1 || port > 65535 || port == plan.Port {
-		return Proposal{}, false
-	}
-	return Proposal{Detected: "Port mismatch detected from deployment evidence.", Current: fmt.Sprintf("%d", plan.Port), Proposed: fmt.Sprintf("%d", port), RequiredActions: []string{"update project configuration", "redeploy", "verify health"}, Risk: "MEDIUM"}, true
+	return Proposal{Detected: "Port mismatch detected from PipeOps readiness-probe evidence.", Current: fmt.Sprintf("%d", plan.Port), Proposed: fmt.Sprintf("%d", observation.DetectedPort), RequiredActions: []string{"update project configuration", "redeploy", "verify health"}, Risk: "MEDIUM"}, true
 }

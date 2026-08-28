@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -68,9 +70,23 @@ type CreateProjectInput struct {
 	WorkspaceID, EnvironmentID, ServerID                    string
 }
 
-// Observation is an evidence-based classification, not an assertion that an
-// accepted deploy request is already healthy.
-type Observation struct{ State, Summary string }
+// Observation is sanitized, evidence-based classification. It deliberately
+// retains only the fields required for safe controller decisions and recovery
+// proposals; provider payloads and raw logs are not persisted.
+type Observation struct {
+	State        string
+	Summary      string
+	FailureKind  string
+	DetectedPort int
+}
+
+// ErrProjectIDMissing means PipeOps accepted create_project but did not return
+// a project identifier in one of the supported response locations
+// by this adapter. A caller must treat this as uncertainty, never as permission
+// to retry the write.
+var ErrProjectIDMissing = errors.New("PipeOps create_project response did not include a project ID")
+
+var readinessProbeRefusalPattern = regexp.MustCompile(`(?i)readiness\s+probe\s+failed:\s*dial\s+tcp\s+[^:\s\"]+:(\d{1,5}):\s*connect:\s*connection\s+refused`)
 
 // NewClient validates configuration without making a network request.
 func NewClient(config Config) (*Client, error) {
@@ -188,7 +204,7 @@ func (client *Client) CreateProject(ctx context.Context, input CreateProjectInpu
 			return value, nil
 		}
 	}
-	return "", errors.New("PipeOps create_project response did not include a project ID")
+	return "", ErrProjectIDMissing
 }
 
 // DeployProject submits the approved project deployment. It returns after the
@@ -212,14 +228,32 @@ func (client *Client) ObserveProject(ctx context.Context, projectID, workspaceID
 	if err != nil {
 		return Observation{}, err
 	}
-	evidence := strings.ToLower(compactJSON(build) + " " + compactJSON(project) + " " + compactJSON(logs))
-	if strings.Contains(evidence, "failed") || strings.Contains(evidence, "crash") || strings.Contains(evidence, "error") {
-		return Observation{State: "FAILED", Summary: "PipeOps build, project, or runtime evidence reports failure."}, nil
+	return classifyObservation(compactJSON(build) + " " + compactJSON(project) + " " + compactJSON(logs)), nil
+}
+
+// classifyObservation converts provider evidence into a small, safe contract.
+// The readiness-probe pattern is derived from the live PipeOps wrong-port
+// experiment on 2026-08-28. It intentionally stores neither the pod IP nor
+// the raw provider log line.
+func classifyObservation(evidence string) Observation {
+	if match := readinessProbeRefusalPattern.FindStringSubmatch(evidence); len(match) == 2 {
+		if port, err := strconv.Atoi(match[1]); err == nil && port >= 1 && port <= 65535 {
+			return Observation{
+				State:        "FAILED",
+				Summary:      fmt.Sprintf("PipeOps readiness probe could not connect to port %d.", port),
+				FailureKind:  "READINESS_PROBE_CONNECTION_REFUSED",
+				DetectedPort: port,
+			}
+		}
 	}
-	if strings.Contains(evidence, "healthy") || strings.Contains(evidence, "running") || strings.Contains(evidence, "ready") {
-		return Observation{State: "HEALTHY", Summary: "PipeOps build, project, and runtime evidence reports a healthy application."}, nil
+	lower := strings.ToLower(evidence)
+	if strings.Contains(lower, "failed") || strings.Contains(lower, "crash") || strings.Contains(lower, "error") {
+		return Observation{State: "FAILED", Summary: "PipeOps build, project, or runtime evidence reports failure.", FailureKind: "PROVIDER_REPORTED_FAILURE"}
 	}
-	return Observation{State: "OBSERVING", Summary: "Deployment accepted; PipeOps has not yet supplied terminal health evidence."}, nil
+	if strings.Contains(lower, "healthy") || strings.Contains(lower, "running") || strings.Contains(lower, "ready") {
+		return Observation{State: "HEALTHY", Summary: "PipeOps build, project, and runtime evidence reports a healthy application."}
+	}
+	return Observation{State: "OBSERVING", Summary: "Deployment accepted; PipeOps has not yet supplied terminal health evidence."}
 }
 
 func (client *Client) call(ctx context.Context, name string, arguments map[string]any) (map[string]any, error) {

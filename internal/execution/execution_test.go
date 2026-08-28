@@ -51,7 +51,7 @@ func TestLostResponseFaultBecomesUnknownWithoutObservationOrRetry(t *testing.T) 
 func TestFailedPortEvidenceAddsRecoveryProposalEvent(t *testing.T) {
 	plan := executionPlan(t)
 	store := &memoryStore{plan: plan, approval: approval.Approval{PlanID: plan.ID, PlanHash: plan.Hash, Decision: approval.DecisionApproved}}
-	client := &fakePipeOps{observation: pipeops.Observation{State: "FAILED", Summary: "application listening on port 3000"}}
+	client := &fakePipeOps{observation: pipeops.Observation{State: "FAILED", Summary: "PipeOps readiness probe could not connect to port 3000.", FailureKind: "READINESS_PROBE_CONNECTION_REFUSED", DetectedPort: 3000}}
 	service := NewService(store, client, policy.Config{WriteEnabled: true, AllowedWorkspaceID: "w", AllowedEnvironmentID: "e", AllowedServerID: "s"})
 	result, err := service.Execute(context.Background(), plan.ID, plan.Hash)
 	if err != nil || result.Status != StatusFailed {
@@ -65,6 +65,17 @@ func TestFailedPortEvidenceAddsRecoveryProposalEvent(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("events=%#v", store.events)
+	}
+}
+
+func TestAcceptedCreateWithoutProjectIDBecomesUnknownWithoutRetry(t *testing.T) {
+	plan := executionPlan(t)
+	store := &memoryStore{plan: plan, approval: approval.Approval{PlanID: plan.ID, PlanHash: plan.Hash, Decision: approval.DecisionApproved}}
+	client := &fakePipeOps{createErr: pipeops.ErrProjectIDMissing}
+	service := NewService(store, client, policy.Config{WriteEnabled: true, AllowedWorkspaceID: "w", AllowedEnvironmentID: "e", AllowedServerID: "s"})
+	result, err := service.Execute(context.Background(), plan.ID, plan.Hash)
+	if err != nil || result.Status != StatusUnknown || client.createCalls != 1 || client.deployCalls != 0 || client.observeCalls != 0 {
+		t.Errorf("result=%#v err=%v calls=%#v", result, err, client)
 	}
 }
 func TestExecuteWithoutApprovalDoesNotCallPipeOps(t *testing.T) {
@@ -118,10 +129,14 @@ func (s *memoryStore) SetExecution(_ context.Context, _ string, status Status, p
 type fakePipeOps struct {
 	createCalls, deployCalls, observeCalls int
 	observation                            pipeops.Observation
+	createErr                              error
 }
 
 func (f *fakePipeOps) CreateProject(context.Context, pipeops.CreateProjectInput) (string, error) {
 	f.createCalls++
+	if f.createErr != nil {
+		return "", f.createErr
+	}
 	return "project-1", nil
 }
 func (f *fakePipeOps) DeployProject(context.Context, string, string) error {

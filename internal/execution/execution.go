@@ -116,6 +116,9 @@ func (s *Service) ExecuteWithFault(ctx context.Context, planID, planHash string,
 	}
 	projectID, err := s.pipeops.CreateProject(ctx, pipeops.CreateProjectInput{Name: plan.ApplicationName, Username: plan.Project.Username, Source: plan.Project.Source, Repository: plan.Repository, Branch: plan.Branch, BuildMethod: plan.Project.BuildMethod, Port: plan.Port, WorkspaceID: plan.Target.WorkspaceID, EnvironmentID: plan.Target.EnvironmentID, ServerID: plan.Target.ServerID})
 	if err != nil {
+		if errors.Is(err, pipeops.ErrProjectIDMissing) {
+			return s.unknown(ctx, exec, "PipeOps accepted create_project but did not return a project ID; the controller will not retry an uncertain write")
+		}
 		return s.fail(ctx, exec, "create_project failed: "+err.Error())
 	}
 	exec, err = s.store.SetExecution(ctx, id, StatusExecuting, projectID, "", event(id, "PROJECT_CREATED", "create_project", "PipeOps project created.", StatusExecuting, StatusExecuting, s.now()))
@@ -142,7 +145,7 @@ func (s *Service) ExecuteWithFault(ctx context.Context, planID, planHash string,
 			return s.store.SetExecution(ctx, id, StatusHealthy, projectID, "", event(id, "DEPLOYMENT_OBSERVED", "get_project", observation.Summary, StatusObserving, StatusHealthy, s.now()))
 		}
 		if observation.State == "FAILED" {
-			if proposal, ok := recovery.FromFailure(plan, observation.Summary); ok {
+			if proposal, ok := recovery.FromFailure(plan, observation); ok {
 				if _, err := s.store.SetExecution(ctx, id, StatusObserving, projectID, "", event(id, "RECOVERY_PROPOSED", "", proposal.Detected+" Current: "+proposal.Current+"; proposed: "+proposal.Proposed+". Actions: update configuration, redeploy, verify health.", StatusObserving, StatusObserving, s.now())); err != nil {
 					return Execution{}, err
 				}
