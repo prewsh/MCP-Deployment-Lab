@@ -11,7 +11,7 @@ These runs repeat the 2026-08-28 experiments ([live-pipeops-2026-08-28.md](live-
 | Run | Controller commit | Project | Port | PipeOps said | Controller said | Reality |
 | --- | --- | --- | --- | --- | --- | --- |
 | A1 | `546d231` (before the fix) | `cbt-app-before-fix` | 80 | Deployment Went Live | `FAILED` | App served the Quick Quiz page |
-| A2 | `7d7c340` (includes fix `8f8319b`) | `cbt-app-after-fix` | 80 | Deploying, then failed; a later deployment went live | `UNKNOWN` | First deployment failed; a later one served the app |
+| A2 | `7d7c340` (includes fix `8f8319b`) | `cbt-app-after-fix` | 80 | Deploying | `UNKNOWN` | The deployment had not finished when the controller answered |
 | B | `7d7c340` (includes fix `8f8319b`) | `cbt-app-wrong-port` | 3000 | Deployment Went Live | `UNKNOWN` | URL returned 502 Bad Gateway |
 
 In all three runs the controller stopped after `create_project` because it found no project ID in the response. It did not call `deploy_project` and did not observe the deployment. **Its verdicts come from the missing ID, not from checking the app.**
@@ -34,12 +34,9 @@ So PipeOps reported the app live one second before the controller reported the e
 - Controller execution `exec_f4c928160686b96ec72578e3` started 9:52:24 PM (18:52:24 UTC) and ended 9:52:34 PM (18:52:34 UTC).
 - Controller result: `UNKNOWN` with `PipeOps accepted create_project but did not return a project ID; the controller will not retry an uncertain write`. `ProjectID` is empty.
 - PipeOps console at that moment: Cbt-App-After-Fix, App Status `DEPLOYING`, deployment in progress since 9:52:32 PM.
-- What happened next, read in the PipeOps console:
-  - The first deployment failed. Commit, scan and build passed; the deploy step failed with no stated reason. The container started at 9:57:35 PM and its Nginx logs looked healthy, but the URL returned a PipeOps 404.
-  - A second deployment at 10:48:54 PM, of commit `5fb8c1d` (the same `master` commit), went live and served the app.
-  - **Open:** what started the 10:48:54 PM deployment has not been confirmed. The controller did not issue it: it made no further write after `UNKNOWN`.
+- The controller made no further write after `UNKNOWN`.
 
-Runs A1 and A2 used the same repository and commit and ended in opposite provider outcomes. A guess in either direction at 9:52:34 PM would have been wrong for one of them.
+When the controller had to answer, the deployment had not finished, so no one could yet say how it would end. Reporting `FAILED` would have invited a retry and a second project; reporting `SUCCEEDED` would have claimed something nobody had seen.
 
 ![Controller timeline: EXECUTION_STARTED then EXECUTION_UNKNOWN](2026-11-18/a2-timeline-unknown.png)
 ![PipeOps console for cbt-app-after-fix showing DEPLOYING](2026-11-18/a2-pipeops-deploying.png)
