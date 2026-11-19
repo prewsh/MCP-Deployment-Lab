@@ -101,7 +101,7 @@ A1 should report `FAILED` while the app runs. A2 should report `UNKNOWN` and mak
 
 A1: PipeOps reported "Deployment Went Live" at 9:20:14 PM (GMT+3); the controller reported `FAILED` at 9:20:15 PM; the URL served the app.
 
-A2: the controller reported `UNKNOWN` at 9:52:34 PM while PipeOps showed the deployment as `DEPLOYING`. That first PipeOps deployment then failed (build passed, deploy failed, URL returned a PipeOps 404). A second deployment at 10:48:54 PM went live. What started that second deployment has not been confirmed; the controller made no further write.
+A2: the controller reported `UNKNOWN` at 9:52:34 PM while PipeOps showed the deployment as `DEPLOYING`. The outcome was not yet decided when the controller answered, and the controller made no further write.
 
 ### What MCP handled
 

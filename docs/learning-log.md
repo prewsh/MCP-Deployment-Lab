@@ -139,4 +139,4 @@ Before the fix, the controller reported `FAILED` one second after PipeOps report
 
 ### What I now understand
 
-`UNKNOWN` was the only answer that stayed true across these runs. The same plan produced a live app once and a failed first deployment the next time, so any guess would have been wrong for one of them. Provider status is a claim, not proof: observation has to include the URL users actually hit. And a timeout during the write itself is still recorded as `FAILED`, which is the next gap to close.
+`UNKNOWN` was the honest answer in A2: when the controller had to reply, the platform itself was still deploying, so neither `FAILED` nor `SUCCEEDED` could be proven. Provider status is a claim, not proof: observation has to include the URL users actually hit. And a timeout during the write itself is still recorded as `FAILED`, which is the next gap to close.

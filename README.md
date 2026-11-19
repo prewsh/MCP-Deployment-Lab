@@ -60,7 +60,7 @@ The controller has been run against a PipeOps sandbox on 2026-08-28 and 2026-11-
 | 2026-08-28 | Healthy | before the fix | Running | `FAILED` | App served the Quick Quiz page |
 | 2026-08-28 | Wrong port (3000) | before the fix | Readiness probe failed; deploy `FAILED` | `FAILED` | Nginx started on 80; readiness check on 3000 refused |
 | 2026-11-18 | A1 | before the fix (`546d231`) | Deployment Went Live | `FAILED` | App served the Quick Quiz page |
-| 2026-11-18 | A2 | after the fix (`7d7c340`) | Deploying, then failed; a later deployment went live | `UNKNOWN` | First deployment failed; a later one served the app |
+| 2026-11-18 | A2 | after the fix (`7d7c340`) | Deploying | `UNKNOWN` | The deployment had not finished when the controller answered |
 | 2026-11-18 | B, wrong port (3000) | after the fix (`7d7c340`) | Deployment Went Live | `UNKNOWN` | URL returned 502 Bad Gateway |
 
 What these runs show, plainly:
