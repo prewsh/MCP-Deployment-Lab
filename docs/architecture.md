@@ -64,7 +64,7 @@ An execution record is unique per plan, preventing repeat execution requests fro
 
 After PipeOps accepts a deployment, the controller observes build logs, project state, and runtime logs. The PipeOps adapter reduces provider data to sanitized fields such as state, failure kind, and detected port; it does not persist raw logs or provider addresses. A readiness-probe connection refusal is represented as `READINESS_PROBE_CONNECTION_REFUSED` plus the detected port.
 
-If PipeOps accepts `create_project` but does not return a durable project identifier in a supported response location, the controller records `UNKNOWN` and does not retry the write. A missing response in the intentional lost-response experiment, an observation error, cancellation, or timeout also becomes `UNKNOWN`.
+If PipeOps accepts `create_project` but does not return a durable project identifier in a supported response location, the controller records `UNKNOWN` and does not retry the write. During observation, an error, cancellation, or the observation timeout also becomes `UNKNOWN`, as does the intentional lost-response fault after `deploy_project`. An error returned by the `create_project` or `deploy_project` call itself, including a transport timeout after the request was sent, is currently recorded as `FAILED`. That is a known gap: the write may have happened.
 
 The recovery helper is proposal-only. It can formulate a port-change proposal only when a failed observation has the structured readiness-probe failure kind and a different detected port. It never parses generic prose, changes configuration, restarts, redeploys, or deletes infrastructure.
 

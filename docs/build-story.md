@@ -2,7 +2,7 @@
 
 ## What we built
 
-MCP Deployment Controller is a Go service that is both an MCP server and a downstream PipeOps MCP client. It exposes a local dashboard and a stateless MCP `2026-07-28` endpoint, stores durable deployment workflows in SQLite, and keeps audit events append-only.
+MCP Deployment Controller is a Go service that is both an MCP server and a downstream PipeOps MCP client. It exposes a local dashboard and a stateless MCP endpoint (it declares `2026-07-28`; the live runs negotiated `2025-11-25`), stores durable deployment workflows in SQLite, and keeps audit events append-only.
 
 The implementation progressed from protocol discovery and fake workflows to read-only PipeOps planning, plan-hash approval, sandbox-gated execution, observation, and controlled failure experiments. The controller distinguishes `HEALTHY`, `FAILED`, and `UNKNOWN`; it does not equate an accepted deployment request with application health.
 
@@ -20,7 +20,7 @@ The container package uses a multi-stage Go build and a minimal runtime image. I
 - Plan-hash tampering rejection and fail-closed sandbox policy.
 - Approval-required execution, exactly-once controller behavior, and health observation fixtures.
 - Lost-response simulation resulting in `UNKNOWN` without blind retry.
-- Failed wrong-port evidence resulting in a non-executing recovery proposal.
+- A wrong-port observation fixture resulting in a non-executing recovery proposal (test only; no live run has reached observation yet).
 - Local HTTP dashboard and persisted timeline API end-to-end test.
 - `go test ./...`, `go vet ./...`, and `go build ./cmd/server`.
 
@@ -28,8 +28,8 @@ The container package uses a multi-stage Go build and a minimal runtime image. I
 
 The first dashboard HTTP test exposed that the static UI expects the repository-root working directory; the test now starts from that intended runtime location. The desktop execution runner also ended a short-lived manual server process before an interactive UI fetch could complete, so no visual-browser claim is made.
 
-Most importantly, no live PipeOps deployment has run from this controller. The connected Codex PipeOps session is not available as a bearer token to the Go process. The project source is now published at `prewsh/MCP-Deployment-Lab` and its Dockerfile was independently verified on GitHub, but PipeOps project creation has not been issued from this session.
+When this was first written, no live PipeOps deployment had run from the controller. Since then it has issued live `create_project` calls on 2026-08-28 and 2026-11-18 (see [findings](findings.md)). In every live run PipeOps accepted the request but the controller found no project ID in the response, so it stopped before `deploy_project` and never observed the deployment. It has not yet reported `HEALTHY` on a live run.
 
 ## Next live experiment
 
-Ensure PipeOps can read `prewsh/MCP-Deployment-Lab`, provide a controller-specific short-lived PipeOps write token through deployment secrets, and configure only the approved beta workspace/environment/server IDs. The first live test should use the normal path. The lost-response experiment should follow only after `ENABLE_FAULT_INJECTION=true` is deliberately enabled for that same sandbox.
+Capture the real `create_project` response shape so the controller gets a durable project ID, then rerun the healthy and wrong-port experiments so the controller observes the outcome itself. The lost-response experiment should follow only after `ENABLE_FAULT_INJECTION=true` is deliberately enabled for that same sandbox.
