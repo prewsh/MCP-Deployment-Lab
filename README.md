@@ -47,9 +47,28 @@ The controller is an MCP server upstream and an MCP client downstream. It stores
 - Downstream PipeOps capability discovery and read-only target validation.
 - SHA-256 plan hashes, one immutable approval decision per plan, and a fail-closed sandbox allowlist.
 - Approved PipeOps execution through only `create_project` and `deploy_project`.
-- Build, project, and runtime-log observation that classifies a deployment as `HEALTHY`, `FAILED`, or `UNKNOWN` with sanitized readiness-probe evidence where available.
+- Build, project, and runtime-log observation that classifies a deployment as `HEALTHY`, `FAILED`, or `UNKNOWN` with sanitized readiness-probe evidence where available. This is covered by tests; no live run has reached observation yet (see [Live results](#live-results)).
 - A proposal-only recovery helper for structured readiness-probe failures with a detected port.
 - Loopback, public-readonly, and authenticated HTTP access modes.
+
+## Live results
+
+The controller has been run against a PipeOps sandbox on 2026-08-28 and 2026-11-18, with MCP Inspector as the client. Full write-ups and screenshots are in [findings](docs/findings.md).
+
+| Date | Run | Controller | PipeOps reported | Controller reported | What actually happened |
+| --- | --- | --- | --- | --- | --- |
+| 2026-08-28 | Healthy | before the fix | Running | `FAILED` | App served the Quick Quiz page |
+| 2026-08-28 | Wrong port (3000) | before the fix | Readiness probe failed; deploy `FAILED` | `FAILED` | Nginx started on 80; readiness check on 3000 refused |
+| 2026-11-18 | A1 | before the fix (`546d231`) | Deployment Went Live | `FAILED` | App served the Quick Quiz page |
+| 2026-11-18 | A2 | after the fix (`7d7c340`) | Deploying, then failed; a later deployment went live | `UNKNOWN` | First deployment failed; a later one served the app |
+| 2026-11-18 | B, wrong port (3000) | after the fix (`7d7c340`) | Deployment Went Live | `UNKNOWN` | URL returned 502 Bad Gateway |
+
+What these runs show, plainly:
+
+- In every live run, PipeOps accepted `create_project` but the controller found no project ID in the response. Before the fix (`8f8319b`) it reported that as `FAILED`; after the fix it reports `UNKNOWN` and does not retry.
+- Because it has no project ID, the controller has never called `deploy_project` or observed a live deployment. **It has not yet reported `HEALTHY` on a live run.**
+- Its verdicts come from the missing ID, not from checking the app. In run B, the 502 was found by the operator, not by the controller.
+- The lost-response experiment has not been run live.
 
 ## MCP tools
 
@@ -132,7 +151,9 @@ The allowlist is checked both when a plan is approved and immediately before exe
 - `UNKNOWN` has no automated reconciliation workflow.
 - Remote authentication is shared bearer authentication, not OAuth.
 - Infrastructure sizing and recommendations are not implemented.
-- If PipeOps accepts project creation but omits a durable project ID in a supported response location, the controller records `UNKNOWN` and does not retry the write. The provider response contract must be captured before the controller can continue that execution safely.
+- If PipeOps accepts project creation but omits a durable project ID in a supported response location, the controller records `UNKNOWN` and does not retry the write. The provider response contract must be captured before the controller can continue that execution safely. So far this has happened on every live run.
+- An error returned by `create_project` or `deploy_project` itself, including a timeout after the request was sent, is still recorded as `FAILED`, even though the write may have happened. This is a known gap.
+- Observation trusts the provider's reported state. It does not yet check the public URL.
 
 See [the architecture document](docs/architecture.md) for the current design, [live findings](docs/findings.md), [roadmap](ROADMAP.md), [the build story](docs/build-story.md), and [learning log](docs/learning-log.md).
 

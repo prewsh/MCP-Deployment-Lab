@@ -122,3 +122,21 @@ The local UI asset and its read-only execution endpoint were structurally verifi
 ### What I now understand
 
 After an accepted non-idempotent request, the absence of a response is a distinct operational state. Treating it as failure encourages unsafe retries; treating it as success hides risk. The correct v0.1 behavior is `UNKNOWN`, a preserved timeline, and a human decision about reconciliation. A recovery suggestion is also only intent until it crosses a separate approval boundary.
+
+## Milestone 6 — Live runs before and after the uncertainty fix
+
+### Question
+
+Does the change that turns an accepted `create_project` without a project ID into `UNKNOWN` hold up against the live platform, and does provider status match reality?
+
+### What I built
+
+No new code. Three live runs on 2026-11-18: one with the code from before the fix, two with the fixed code, one of them with a deliberately wrong port.
+
+### What happened
+
+Before the fix, the controller reported `FAILED` one second after PipeOps reported the app live. After the fix, it reported `UNKNOWN` in both runs and made no further write. In the wrong-port run PipeOps reported "Deployment Went Live" while the URL returned 502. The controller did not see the 502; it stopped at the missing project ID. Details are in [findings](findings.md).
+
+### What I now understand
+
+`UNKNOWN` was the only answer that stayed true across these runs. The same plan produced a live app once and a failed first deployment the next time, so any guess would have been wrong for one of them. Provider status is a claim, not proof: observation has to include the URL users actually hit. And a timeout during the write itself is still recorded as `FAILED`, which is the next gap to close.
